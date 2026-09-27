@@ -1,0 +1,663 @@
+{
+  "name": "RecruitmentOS AI – Revenue Recovery Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        -144
+      ],
+      "id": "3c80db67-bde6-4d42-865e-ae9d5016fca6",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT_REF.supabase.co/rest/v1/applications?select=*,vacancies(*,clients(*)),candidates(*),interviews(*),tasks(*),activities(*)",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ],
+      "id": "c404b116-e704-4331-a48e-7d29ebef42d4",
+      "name": "Get Recruitment Pipeline"
+    },
+    {
+      "parameters": {
+        "jsCode": "const DAY_MS = 24 * 60 * 60 * 1000;\nconst HOUR_MS = 60 * 60 * 1000;\nconst now = new Date();\n\nfunction validDate(value) {\n  if (!value) return null;\n\n  const date = new Date(value);\n  return Number.isNaN(date.getTime()) ? null : date;\n}\n\nreturn $input.all().map((item) => {\n  const application = item.json;\n\n  const vacancy = application.vacancies || {};\n  const client = vacancy.clients || {};\n  const candidate = application.candidates || {};\n  const interviews = application.interviews || [];\n  const tasks = application.tasks || [];\n  const activities = application.activities || [];\n\n  // Estimate the recruitment agency's placement fee.\n  const salary =\n    Number(vacancy.salary_max) ||\n    Number(vacancy.salary_min) ||\n    0;\n\n  const feePercentage =\n    Number(client.placement_fee_percentage) ||\n    0;\n\n  const estimatedPlacementValue = Math.round(\n    salary * (feePercentage / 100)\n  );\n\n  // Calculate how long the application has been inactive.\n  const lastActivityDate = validDate(application.last_activity_at);\n\n  const daysInactive = lastActivityDate\n    ? Math.max(\n        0,\n        Math.floor((now - lastActivityDate) / DAY_MS)\n      )\n    : null;\n\n  // Find incomplete and overdue tasks.\n  const openTasks = tasks.filter(\n    (task) => ![\"completed\", \"cancelled\"].includes(task.status)\n  );\n\n  const overdueTasks = openTasks.filter((task) => {\n    const dueDate = validDate(task.due_at);\n    return dueDate && dueDate < now;\n  });\n\n  // Find the next upcoming interview.\n  const upcomingInterviews = interviews\n    .map((interview) => ({\n      ...interview,\n      calculatedDate: validDate(\n        interview.scheduled_at ||\n        interview.interview_at ||\n        interview.start_time\n      ),\n    }))\n    .filter(\n      (interview) =>\n        interview.calculatedDate &&\n        interview.calculatedDate >= now &&\n        interview.status !== \"cancelled\"\n    )\n    .sort(\n      (a, b) =>\n        a.calculatedDate.getTime() -\n        b.calculatedDate.getTime()\n    );\n\n  const nextInterview = upcomingInterviews[0] || null;\n\n  const hoursUntilNextInterview = nextInterview\n    ? Math.round(\n        (nextInterview.calculatedDate - now) / HOUR_MS\n      )\n    : null;\n\n  // Check whether a reminder has already been recorded.\n  const reminderActivityFound = activities.some((activity) =>\n    String(activity.activity_type || \"\")\n      .toLowerCase()\n      .includes(\"reminder\")\n  );\n\n  return {\n    json: {\n      ...application,\n\n      pipeline_metrics: {\n        calculated_at: now.toISOString(),\n\n        client_name: client.name || null,\n        vacancy_title: vacancy.title || null,\n        candidate_name: candidate.name || null,\n\n        salary_used: salary,\n        placement_fee_percentage: feePercentage,\n        estimated_placement_value: estimatedPlacementValue,\n\n        days_inactive: daysInactive,\n\n        open_task_count: openTasks.length,\n        overdue_task_count: overdueTasks.length,\n        has_overdue_task: overdueTasks.length > 0,\n\n        next_interview_at: nextInterview\n          ? nextInterview.calculatedDate.toISOString()\n          : null,\n\n        hours_until_next_interview: hoursUntilNextInterview,\n        reminder_activity_found: reminderActivityFound,\n      },\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "5639e28b-90a7-4497-bb05-5ba8d456fdb2",
+      "name": "Calculate Pipeline Metrics"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0891bd22-980a-4988-86b7-26134fb13c77",
+              "leftValue": "={{\n  ![\"placed\", \"rejected\", \"withdrawn\", \"hired\"].includes(\n    String($json.status || \"\").toLowerCase()\n  )\n  &&\n  (\n    $json.pipeline_metrics.has_overdue_task === true\n    ||\n    (\n      $json.pipeline_metrics.days_inactive !== null\n      &&\n      $json.pipeline_metrics.days_inactive >= 3\n    )\n    ||\n    (\n      $json.pipeline_metrics.hours_until_next_interview !== null\n      &&\n      $json.pipeline_metrics.hours_until_next_interview >= 0\n      &&\n      $json.pipeline_metrics.hours_until_next_interview <= 48\n      &&\n      $json.pipeline_metrics.reminder_activity_found === false\n    )\n  )\n}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        0
+      ],
+      "id": "284784fd-d881-4a23-a1c9-72dd117188d9",
+      "name": "Potential Risk?"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyse the recruitment application below.\n\nIdentify the specific operational or revenue risk, decide whether human action is required, and recommend the single best next action.\n\nUse only the supplied data. Do not invent events, conversations, dates, client responses, candidate responses, or financial values.\n\nRecruitment application data:\n\n{{ JSON.stringify($json) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a Recruitment Revenue Recovery Analyst working for a recruitment and staffing agency.\n\nYour purpose is to detect stalled placements, delayed client feedback, candidate follow-up failures, overdue recruiter tasks, missing interview reminders, and other situations that could cause the agency to lose placement revenue.\n\nEvaluate the full context: application status, notes, vacancy, client, candidate, interviews, tasks, activities, and pipeline metrics.\n\nPrioritise situations based on urgency, placement value, inactivity, upcoming events, and evidence in the records.\n\nRecommend one clear action for the recruiter. Do not contact clients or candidates yourself. Do not claim that an action has already been completed.\n\nIf the evidence does not justify intervention, set action_required to false.\n\nBe factual, commercially aware, and concise.\n\n\nFor risk_type, use exactly one of these values:\nclient_feedback_delay\ncandidate_follow_up\ninterview_reminder_missing\noverdue_task\nplacement_at_risk\nother\n\nFor priority, use exactly one of: high, medium, low.\nconfidence_score must be a whole number from 0 to 100."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        896,
+        -96
+      ],
+      "id": "fb01a456-cea5-42f4-82b7-847fd56be738",
+      "name": "Recruitment Revenue Recovery Analyst"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        848,
+        208
+      ],
+      "id": "3f9a6923-ec26-44ea-99d7-9744dc4e491a",
+      "name": "OpenAI Chat Model"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"application_id\": 1,\n  \"vacancy_id\": 1,\n  \"candidate_id\": 1,\n  \"client_id\": 1,\n  \"action_required\": true,\n  \"risk_type\": \"client_feedback_delay\",\n  \"priority\": \"high\",\n  \"confidence_score\": 90,\n  \"risk_summary\": \"Client feedback remains outstanding after the completed interview.\",\n  \"evidence\": [\n    \"The client interview was completed.\",\n    \"A client follow-up task is overdue.\"\n  ],\n  \"recommended_action\": \"Contact the client today to request interview feedback and confirm the hiring decision timeline.\",\n  \"task_title\": \"Request overdue client interview feedback\",\n  \"task_description\": \"Follow up with the client regarding the completed interview and record their feedback in the recruitment system.\",\n  \"due_within_hours\": 4,\n  \"potential_revenue\": 32000,\n  \"notification_message\": \"High-priority placement risk: client feedback is overdue on a potential $32,000 placement.\"\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        208
+      ],
+      "id": "ef508fbf-68d4-43fb-abdb-8e7dea1fec5b",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "eff4d110-f008-4f7b-b867-8cd8c5c07272",
+              "leftValue": "={{ $json.output.action_required }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1264,
+        -96
+      ],
+      "id": "967b19d3-9037-4f1b-9159-a0245ef46079",
+      "name": "Action Required?"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT_REF.supabase.co/rest/v1/ai_recommendations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "id,created_at"
+            },
+            {
+              "name": "application_id",
+              "value": "={{ 'eq.' + $json.output.application_id }}"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            },
+            {
+              "name": "recommendation_type",
+              "value": "={{ 'eq.' + $json.output.risk_type }}"
+            },
+            {
+              "name": "status",
+              "value": "eq.pending"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1488,
+        -192
+      ],
+      "id": "6a071093-7cf8-4903-abca-a174e270ea5b",
+      "name": "Check Existing Recommendation"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5e733422-1222-49c6-a72c-bbbb07eea8ad",
+              "leftValue": "={{ Array.isArray($json.body) && $json.body.length === 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1712,
+        -192
+      ],
+      "id": "a170e814-4ee9-459e-bd82-f7c68b8545ff",
+      "name": "No Recent Recommendation?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_PROJECT_REF.supabase.co/rest/v1/ai_recommendations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  recommendation_type: $('Action Required?').item.json.output.risk_type,\n  title: $('Action Required?').item.json.output.task_title,\n  reasoning: $('Action Required?').item.json.output.risk_summary + '\\nEvidence: ' + $('Action Required?').item.json.output.evidence.join('; '),\n  recommended_action: $('Action Required?').item.json.output.recommended_action,\n  priority: $('Action Required?').item.json.output.priority,\n  status: 'pending',\n  confidence_score: $('Action Required?').item.json.output.confidence_score,\n  risk_score: $('Action Required?').item.json.output.priority === 'high' ? 90 : $('Action Required?').item.json.output.priority === 'medium' ? 60 : 30,\n  revenue_at_risk: $('Action Required?').item.json.output.potential_revenue,\n  currency: 'USD',\n  client_id: $('Action Required?').item.json.output.client_id,\n  vacancy_id: $('Action Required?').item.json.output.vacancy_id,\n  candidate_id: $('Action Required?').item.json.output.candidate_id,\n  application_id: $('Action Required?').item.json.output.application_id,\n  generated_at: $now.toISO(),\n  expires_at: $now.plus({ hours: 24 }).toISO(),\n  model_used: 'gpt-5-mini',\n  input_snapshot: $('Action Required?').item.json.output,\n  notes: $('Action Required?').item.json.output.notification_message\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1936,
+        -288
+      ],
+      "id": "8bab1a2c-f7a9-4e58-ac5e-30f0c18a6eee",
+      "name": "Save AI Recommendation"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_PROJECT_REF.supabase.co/rest/v1/tasks",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  title: $('Action Required?').item.json.output.task_title,\n  description: $('Action Required?').item.json.output.task_description,\n  task_type: $('Action Required?').item.json.output.risk_type,\n  priority: $('Action Required?').item.json.output.priority,\n  status: 'pending',\n  due_at: $now.plus({\n    hours: Number($('Action Required?').item.json.output.due_within_hours) || 24\n  }).toISO(),\n  assigned_to: 'Recruiter Team',\n  client_id: $('Action Required?').item.json.output.client_id,\n  vacancy_id: $('Action Required?').item.json.output.vacancy_id,\n  application_id: $('Action Required?').item.json.output.application_id,\n  source: 'ai_agent',\n  notes: 'AI recommendation ID: ' + $json.id + '. ' + $('Action Required?').item.json.output.notification_message\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        -288
+      ],
+      "id": "44be9e63-9ca1-42b6-a0e7-329cdc08448a",
+      "name": "Create Recovery Task"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT_REF.supabase.co/rest/v1/ai_recommendations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "={{ 'eq.' + $('Save AI Recommendation').item.json.id }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  task_id: $json.id\n} }}",
+        "options": {},
+        "method": "PATCH"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2384,
+        -288
+      ],
+      "id": "ed245a46-4e07-4d62-ab19-fb04ae019909",
+      "name": "Link Task to Recommendation"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6b295fd9-144e-43fd-aae3-e346571a2239",
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "high",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2624,
+        -496
+      ],
+      "id": "4d8c6ad7-0d60-4d29-9ac1-9eb8aec1458a",
+      "name": "Urgent Alert?"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_RECRUITER_TELEGRAM_CHAT_ID",
+        "text": "={{ '🚨 RECRUITMENT REVENUE ALERT' +\n'\\n\\nPriority: ' + $json.priority.toUpperCase() +\n'\\nRisk: ' + $json.recommendation_type.replaceAll('_', ' ') +\n'\\nRevenue at risk: ' + $json.currency + ' ' + Number($json.revenue_at_risk).toLocaleString('en-US') +\n'\\n\\n' + $json.title +\n'\\n\\nSummary:\\n' + $json.input_snapshot.risk_summary +\n'\\n\\nRecommended action:\\n' + $json.recommended_action +\n'\\n\\nTask ID: ' + $('Create Recovery Task').item.json.id +\n'\\nDue: ' + $('Create Recovery Task').item.json.due_at +\n'\\nAssigned to: ' + $('Create Recovery Task').item.json.assigned_to }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2832,
+        -512
+      ],
+      "id": "75dc9de2-b0eb-47f2-8fa3-e375fd3c0c59",
+      "name": "Send Urgent Recovery Alert",
+      "webhookId": "bb6ac1f2-a9e2-49f1-90f2-b9622a432f2f"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "recommendations",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        2608,
+        0
+      ],
+      "id": "d7b36ec8-ab54-4f85-85cf-cb24e432f606",
+      "name": "Aggregate Recovery Summary"
+    },
+    {
+      "parameters": {
+        "jsCode": "const recommendations = $input.first().json.recommendations ?? [];\n\nconst totalRevenueAtRisk = recommendations.reduce(\n  (sum, item) => sum + Number(item.revenue_at_risk || 0),\n  0\n);\n\nconst highPriorityCount = recommendations.filter(\n  item => item.priority === 'high'\n).length;\n\nconst riskBreakdown = recommendations.reduce((breakdown, item) => {\n  const risk = item.recommendation_type || 'other';\n  breakdown[risk] = (breakdown[risk] || 0) + 1;\n  return breakdown;\n}, {});\n\nconst breakdownText = Object.entries(riskBreakdown)\n  .map(([risk, count]) => {\n    return `• ${risk.replaceAll('_', ' ')}: ${count}`;\n  })\n  .join('\\n');\n\nconst actionText = recommendations\n  .map((item, index) => {\n    const revenue = Number(item.revenue_at_risk || 0).toLocaleString('en-US');\n\n    return `${index + 1}. ${item.title}\nRevenue at risk: ${item.currency || 'USD'} ${revenue}\nAction: ${item.recommended_action}`;\n  })\n  .join('\\n\\n');\n\nconst generatedAt = new Intl.DateTimeFormat('en-GB', {\n  timeZone: 'Africa/Lagos',\n  dateStyle: 'medium',\n  timeStyle: 'short'\n}).format(new Date());\n\nconst summaryMessage = `📊 RECRUITMENT RECOVERY SUMMARY\n\nGenerated: ${generatedAt}\nRisks detected: ${recommendations.length}\nHigh-priority risks: ${highPriorityCount}\nTotal revenue at risk: USD ${totalRevenueAtRisk.toLocaleString('en-US')}\n\nRisk breakdown:\n${breakdownText}\n\nRequired actions:\n${actionText}`;\n\nreturn [\n  {\n    json: {\n      generated_at: generatedAt,\n      recommendations_count: recommendations.length,\n      high_priority_count: highPriorityCount,\n      total_revenue_at_risk: totalRevenueAtRisk,\n      currency: 'USD',\n      risk_breakdown: riskBreakdown,\n      summary_message: summaryMessage\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        0
+      ],
+      "id": "d505cdd2-6373-4e9b-80e9-263fc4359775",
+      "name": "Build Recovery Summary"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_MANAGEMENT_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.summary_message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3120,
+        0
+      ],
+      "id": "7acae25c-090c-47f3-b06b-dfaf3521709c",
+      "name": "Send Recovery Summary",
+      "webhookId": "bb6ac1f2-a9e2-49f1-90f2-b9622a432f2f"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -112,
+        256
+      ],
+      "id": "13f66272-9cf8-4ae1-8258-e34f191b8341",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get Recruitment Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Recruitment Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Calculate Pipeline Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Pipeline Metrics": {
+      "main": [
+        [
+          {
+            "node": "Potential Risk?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Potential Risk?": {
+      "main": [
+        [
+          {
+            "node": "Recruitment Revenue Recovery Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Recruitment Revenue Recovery Analyst",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Recruitment Revenue Recovery Analyst",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recruitment Revenue Recovery Analyst": {
+      "main": [
+        [
+          {
+            "node": "Action Required?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Action Required?": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Recommendation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Recommendation": {
+      "main": [
+        [
+          {
+            "node": "No Recent Recommendation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Recent Recommendation?": {
+      "main": [
+        [
+          {
+            "node": "Save AI Recommendation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save AI Recommendation": {
+      "main": [
+        [
+          {
+            "node": "Create Recovery Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Recovery Task": {
+      "main": [
+        [
+          {
+            "node": "Link Task to Recommendation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link Task to Recommendation": {
+      "main": [
+        [
+          {
+            "node": "Urgent Alert?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Aggregate Recovery Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Urgent Alert?": {
+      "main": [
+        [
+          {
+            "node": "Send Urgent Recovery Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Recovery Summary": {
+      "main": [
+        [
+          {
+            "node": "Build Recovery Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Recovery Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Recovery Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Recruitment Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}
