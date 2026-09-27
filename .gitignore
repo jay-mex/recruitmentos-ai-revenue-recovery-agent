@@ -1,0 +1,8 @@
+.DS_Store
+.env
+*.log
+node_modules/
+
+# Never commit exports containing live data or credential references
+private/
+exports/
